@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 import operator
 from pathlib import Path
 import os
-from agent.tools import search_arxiv, read_paper_pdf, check_memory
+from agent.tools import search_arxiv, read_paper_pdf, check_memory, export_summary
 
 
 load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env")
@@ -27,13 +27,13 @@ llm = ChatGroq(
     api_key=os.getenv("GROQ_API_KEY")
 )
 
-tools = [check_memory, search_arxiv, read_paper_pdf]
+tools = [check_memory, search_arxiv, read_paper_pdf, export_summary]
 llm_with_tools = llm.bind_tools(tools)
 
 # ============================================
 # 3. PROMPT SYSTÈME
 # ============================================
-SYSTEM_PROMPT = """You are a research assistant specialized in finding and summarizing scientific papers.
+SYSTEM_PROMPT = """You are a multilingual research assistant specialized in scientific papers.
 
 For every request, follow this exact order:
 1. ALWAYS call check_memory FIRST to see if you already know about this topic
@@ -41,9 +41,9 @@ For every request, follow this exact order:
 3. If not, use search_arxiv to find new papers
 4. Use read_paper_pdf on the most relevant paper only
 5. Provide a clear structured summary: title, authors, year, contribution, results
+6. If the user asks to save, export or download the summary, call export_summary
 
 Be precise in search queries. Use exact titles when known."""
-
 # ============================================
 # 4. NOEUDS DU GRAPHE
 # ============================================

@@ -10,6 +10,7 @@ import tempfile
 import fitz
 from agent.memory import save_paper, search_memory, get_memory_count
 load_dotenv()
+from datetime import datetime
 
 @tool
 def search_arxiv(query: str) -> str:
@@ -111,3 +112,28 @@ def check_memory(query: str) -> str:
     if result:
         return f"✅ Trouvé en mémoire ({count} papers stockés) :\n\n{result}"
     return f"Rien en mémoire sur ce sujet ({count} papers stockés sur d'autres sujets)."
+
+@tool
+def export_summary(content: str, filename: str = "") -> str:
+    """
+    Exporte un résumé en fichier Markdown.
+    À appeler quand l'utilisateur demande de sauvegarder ou exporter un résumé.
+    Input : contenu du résumé, nom du fichier (optionnel)
+    Output : chemin du fichier créé
+    """
+    import os
+
+    if not filename:
+        filename = f"summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+    filename = filename.replace(" ", "_").replace("/", "-")
+    filepath = f"exports/{filename}.md"
+
+    os.makedirs("exports", exist_ok=True)
+
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(f"# Research Summary\n")
+        f.write(f"*Generated on {datetime.now().strftime('%Y-%m-%d %H:%M')}*\n\n")
+        f.write(content)
+
+    return f"✅ Résumé exporté : `{filepath}`"
