@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 import requests
 import tempfile
 import fitz
-
+from agent.memory import save_paper, search_memory, get_memory_count
 load_dotenv()
 
 @tool
@@ -78,9 +78,36 @@ def read_paper_pdf(pdf_url: str) -> str:
             extracted += doc[page_num].get_text()
 
         doc.close()
+
+        # Sauvegarde en mémoire
+        try:
+            from agent.memory import save_paper
+            title = extracted[:100]
+            save_paper(title=title, content=extracted, pdf_url=pdf_url)
+        except:
+            pass  # la mémoire est optionnelle, pas bloquante
+        
         return f"📄 Contenu extrait :\n\n{extracted[:2000]}"
 
     except requests.Timeout:
         return "❌ Timeout : PDF trop long à télécharger, essaie un autre paper."
     except Exception as e:
         return f"❌ Erreur : {str(e)}"
+    
+
+@tool
+def check_memory(query: str) -> str:
+    """
+    Vérifie si des papers liés à ce sujet sont déjà en mémoire.
+    À appeler EN PREMIER avant search_arxiv.
+    Input : sujet ou titre du paper
+    Output : papers déjà connus ou message vide
+    """
+    count = get_memory_count()
+    if count == 0:
+        return "Aucun paper en mémoire pour l'instant."
+
+    result = search_memory(query)
+    if result:
+        return f"✅ Trouvé en mémoire ({count} papers stockés) :\n\n{result}"
+    return f"Rien en mémoire sur ce sujet ({count} papers stockés sur d'autres sujets)."
