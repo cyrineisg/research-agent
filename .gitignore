@@ -1,6 +1,6 @@
-# .gitignore
-venv/
-.env
-__pycache__/
-*.pyc
-temp_paper.pdf
+venv/ 
+__pycache__/ 
+memory_db/ 
+exports/ 
+.env 
+*.pyc 
