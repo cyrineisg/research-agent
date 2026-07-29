@@ -23,7 +23,7 @@ class AgentState(TypedDict):
 # 2. LLM + OUTILS
 # ============================================
 llm = ChatGroq(
-    model="llama-3.1-8b-instant",
+    model="qwen/qwen3.6-27b",
     api_key=os.getenv("GROQ_API_KEY")
 )
 
@@ -35,15 +35,24 @@ llm_with_tools = llm.bind_tools(tools)
 # ============================================
 SYSTEM_PROMPT = """You are a multilingual research assistant specialized in scientific papers.
 
+LANGUAGE RULES:
+- If the user writes in Arabic, respond ENTIRELY in Arabic
+- If the user writes in French, respond ENTIRELY in French
+- If the user writes in English, respond ENTIRELY in English
+- Always search arXiv in English regardless of input language
+
 For every request, follow this exact order:
 1. ALWAYS call check_memory FIRST to see if you already know about this topic
-2. If memory has relevant results, use them directly
-3. If not, use search_arxiv to find new papers
-4. Use read_paper_pdf on the most relevant paper only
-5. Provide a clear structured summary: title, authors, year, contribution, results
-6. If the user asks to save, export or download the summary, call export_summary
+2. If not in memory, use search_arxiv to find new papers
+3. Use read_paper_pdf on the most relevant paper only
+4. Provide a clear structured summary in plain text
 
-Be precise in search queries. Use exact titles when known."""
+EXPORT RULES — very important:
+- When calling export_summary, pass ONLY plain text with no special characters
+- No markdown symbols like ** or ## in the content parameter
+- No newline characters \n in the content parameter
+- Keep the content parameter under 500 characters
+- Use a simple short filename with no spaces"""
 # ============================================
 # 4. NOEUDS DU GRAPHE
 # ============================================

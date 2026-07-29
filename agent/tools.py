@@ -1,5 +1,6 @@
 import arxiv
 import os
+import re
 import fitz
 import urllib.request
 import tempfile
@@ -121,19 +122,73 @@ def export_summary(content: str, filename: str = "") -> str:
     Input : contenu du résumé, nom du fichier (optionnel)
     Output : chemin du fichier créé
     """
-    import os
+ 
+  
 
     if not filename:
         filename = f"summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
-    filename = filename.replace(" ", "_").replace("/", "-")
+    # Nettoie le nom de fichier — supprime tous les caractères spéciaux
+    filename = re.sub(r'[^\w\s-]', '', filename)
+    filename = filename.replace(" ", "_")[:50]  # limite la longueur
     filepath = f"exports/{filename}.md"
 
     os.makedirs("exports", exist_ok=True)
 
+    # Nettoie le contenu avant d'écrire
+    clean_content = content.encode('utf-8', errors='ignore').decode('utf-8')
+
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(f"# Research Summary\n")
         f.write(f"*Generated on {datetime.now().strftime('%Y-%m-%d %H:%M')}*\n\n")
-        f.write(content)
+        f.write(clean_content)
 
-    return f"✅ Résumé exporté : `{filepath}`"
+    return f"Résumé exporté avec succès dans le fichier {filepath}"
+
+
+@tool
+def search_arxiv(query: str) -> str:
+    """
+    Cherche des papers scientifiques sur arXiv.
+    Input : un sujet ou une question en anglais.
+    Output : liste des papers les plus pertinents.
+    """
+    import time
+
+    try:
+        time.sleep(3)  # pause pour éviter le rate limit arXiv
+
+        client = arxiv.Client(
+            num_retries=2,
+            delay_seconds=5
+        )
+        search = arxiv.Search(
+            query=query,
+            max_results=3,
+            sort_by=arxiv.SortCriterion.Relevance
+        )
+
+        results = []
+        for paper in client.results(search):
+            results.append({
+                "titre": paper.title,
+                "auteurs": [a.name for a in paper.authors[:2]],
+                "resume": paper.summary[:300],
+                "pdf_url": paper.pdf_url,
+                "date": str(paper.published.date())
+            })
+
+        if not results:
+            return "Aucun paper trouvé."
+
+        output = f"📚 {len(results)} papers trouvés :\n\n"
+        for i, p in enumerate(results, 1):
+            output += f"{i}. {p['titre']} ({p['date']})\n"
+            output += f"   Auteurs : {', '.join(p['auteurs'])}\n"
+            output += f"   Résumé : {p['resume']}...\n"
+            output += f"   PDF : {p['pdf_url']}\n\n"
+
+        return output
+
+    except Exception as e:
+        return f"❌ Erreur arXiv : {str(e)}. Réessaie dans quelques secondes."
