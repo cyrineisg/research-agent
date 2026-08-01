@@ -1,9 +1,8 @@
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 from langchain_groq import ChatGroq
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from typing import TypedDict, Annotated 
-from agent.tools import search_arxiv, read_paper_pdf
 from dotenv import load_dotenv
 import operator
 from pathlib import Path
@@ -18,6 +17,9 @@ load_dotenv(dotenv_path=Path(__file__).parent.parent / ".env")
 # ============================================
 class AgentState(TypedDict):
     messages: Annotated[list, operator.add]
+    papers_found: str        # résultat du chercheur
+    papers_content: str      # résultat du lecteur
+    final_summary: str       # résultat du synthétiseur
 
 # ============================================
 # 2. LLM + OUTILS
@@ -31,65 +33,158 @@ tools = [check_memory, search_arxiv, read_paper_pdf, export_summary]
 llm_with_tools = llm.bind_tools(tools)
 
 # ============================================
-# 3. PROMPT SYSTÈME
+# AGENT 1 — CHERCHEUR
 # ============================================
-SYSTEM_PROMPT = """You are a multilingual research assistant specialized in scientific papers.
+search_tools = [check_memory, search_arxiv]
+search_llm = llm.bind_tools(search_tools)
+search_tools_node = ToolNode(search_tools)
 
-LANGUAGE RULES:
-- If the user writes in Arabic, respond ENTIRELY in Arabic
-- If the user writes in French, respond ENTIRELY in French
-- If the user writes in English, respond ENTIRELY in English
-- Always search arXiv in English regardless of input language
+SEARCHER_PROMPT = """You are a research search specialist.
+Your ONLY job is to find relevant papers.
+1. Call check_memory first
+2. If memory has results, stop and return them — do NOT call search_arxiv
+3. If memory is empty, call search_arxiv ONCE only
+4. Return the papers found — nothing else.
+Always search in English."""
 
-For every request, follow this exact order:
-1. ALWAYS call check_memory FIRST to see if you already know about this topic
-2. If not in memory, use search_arxiv to find new papers
-3. Use read_paper_pdf on the most relevant paper only
-4. Provide a clear structured summary in plain text
-
-EXPORT RULES — very important:
-- When calling export_summary, pass ONLY plain text with no special characters
-- No markdown symbols like ** or ## in the content parameter
-- No newline characters \n in the content parameter
-- Keep the content parameter under 500 characters
-- Use a simple short filename with no spaces"""
-# ============================================
-# 4. NOEUDS DU GRAPHE
-# ============================================
-def agent_node(state: AgentState):
-    """Le LLM décide quoi faire."""
-    messages = state["messages"]
-
-    #Ajoute le prompt système si c'est le premier message
-    if not any(isinstance(m, SystemMessage) for m in messages):
-        messages = [SystemMessage(content=SYSTEM_PROMPT)] + messages
-    
-    response = llm_with_tools.invoke(messages)
+def searcher_node(state: AgentState):
+    messages = [SystemMessage(content=SEARCHER_PROMPT)] + state["messages"]
+    response = search_llm.invoke(messages)
     return {"messages": [response]}
 
-#ToolNode exécute automatiquement l'outil si le LLM le demande
-tool_node = ToolNode(tools)
+def searcher_should_continue(state: AgentState):
+    last = state["messages"][-1]
+    if hasattr(last, "tool_calls") and last.tool_calls:
+        return "search_tools"
+    
+    # Compte combien de fois search_arxiv a été appelé
+    arxiv_attempts = sum(
+        1 for msg in state["messages"]
+        if hasattr(msg, "name") and msg.name == "search_arxiv"
+    )
+    
+    # Si arXiv a échoué 1 fois → passe directement au reader
+    if arxiv_attempts >= 1:
+        return "reader"
+    
+    return "reader"
+
 
 # ============================================
-# 5. CONDITION : continuer ou terminer ?
+# AGENT 2 — LECTEUR
 # ============================================
-def should_continue(state: AgentState):
-    last_message = state["messages"][-1]
-    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
-        return "tools"
+read_tools = [read_paper_pdf]
+read_llm = llm.bind_tools(read_tools)
+read_tools_node = ToolNode(read_tools)
+
+READER_PROMPT = """You are a research paper reader specialist.
+Your ONLY job is to read ONE paper — no more.
+1. Pick the single most relevant paper from the list
+2. Call read_paper_pdf ONCE with its URL
+3. STOP immediately after — do not call any other tool
+Do NOT call read_paper_pdf more than once."""
+
+def reader_node(state: AgentState):
+    # Récupère les résultats du chercheur
+    last_content = ""
+    for msg in reversed(state["messages"]):
+        if hasattr(msg, "content") and msg.content and not hasattr(msg, "tool_calls"):
+            last_content = msg.content
+            break
+
+    messages = [
+        SystemMessage(content=READER_PROMPT),
+        HumanMessage(content=f"Papers found:\n{last_content}\n\nNow read the most relevant one.")
+    ]
+    response = read_llm.invoke(messages)
+    return {"messages": [response]}
+
+def reader_should_continue(state: AgentState):
+    last = state["messages"][-1]
+    if hasattr(last, "tool_calls") and last.tool_calls:
+        # Compte combien de fois read_paper_pdf a été appelé
+        read_attempts = sum(
+            1 for msg in state["messages"]
+            if hasattr(msg, "name") and msg.name == "read_paper_pdf"
+        )
+        # Maximum 1 lecture → passe au synthesizer
+        if read_attempts >= 1:
+            return "synthesizer"
+        return "read_tools"
+    return "synthesizer"
+
+
+
+# ============================================
+# AGENT 3 — SYNTHÉTISEUR
+# ============================================
+synth_tools = [export_summary]
+synth_llm = llm.bind_tools(synth_tools)
+
+SYNTHESIZER_PROMPT = """You are a research synthesis specialist.
+Your job is to produce a clear, structured summary from the papers read.
+
+Structure your summary as:
+## Papers Found
+[list of papers]
+
+## Key Contributions
+[main findings]
+
+## Summary
+[2-3 paragraph synthesis]
+
+Respond in the SAME language as the original user question.
+If the user asked to export, call export_summary with plain text only (no markdown symbols)."""
+
+def synthesizer_node(state: AgentState):
+    # Collecte tout le contexte
+    context = "\n".join([
+        msg.content for msg in state["messages"]
+        if hasattr(msg, "content") and msg.content
+        and not (hasattr(msg, "tool_calls") and msg.tool_calls)
+    ])
+
+    original_question = ""
+    for msg in state["messages"]:
+        if isinstance(msg, HumanMessage):
+            original_question = msg.content
+            break
+
+    messages = [
+        SystemMessage(content=SYNTHESIZER_PROMPT),
+        HumanMessage(content=f"Original question: {original_question}\n\nContext:\n{context[:3000]}\n\nNow synthesize.")
+    ]
+    response = synth_llm.invoke(messages)
+    return {"messages": [response]}
+
+def synthesizer_should_continue(state: AgentState):
+    last = state["messages"][-1]
+    if hasattr(last, "tool_calls") and last.tool_calls:
+        return "synth_tools"
     return END
 
 
 # ============================================
-# 6. CONSTRUCTION DU GRAPHE
+# CONSTRUCTION DU GRAPHE
 # ============================================
 graph = StateGraph(AgentState)
 
-graph.add_node("agent", agent_node)
-graph.add_node("tools", tool_node)
+# Noeuds
+graph.add_node("searcher", searcher_node)
+graph.add_node("search_tools", search_tools_node)
+graph.add_node("reader", reader_node)
+graph.add_node("read_tools", read_tools_node)
+graph.add_node("synthesizer", synthesizer_node)
+graph.add_node("synth_tools", ToolNode(synth_tools))
 
-graph.set_entry_point("agent")
-graph.add_conditional_edges("agent", should_continue)
-graph.add_edge("tools", "agent")
+# Flux
+graph.set_entry_point("searcher")
+graph.add_conditional_edges("searcher", searcher_should_continue)
+graph.add_edge("search_tools", "searcher")
+graph.add_conditional_edges("reader", reader_should_continue)
+graph.add_edge("read_tools", "reader")
+graph.add_conditional_edges("synthesizer", synthesizer_should_continue)
+graph.add_edge("synth_tools", "synthesizer")
 
 app_graph = graph.compile()

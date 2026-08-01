@@ -30,25 +30,41 @@ def save_paper(title: str, content: str, pdf_url: str):
 
 
 def search_memory(query: str, n_results: int = 2) -> str:
-    """Cherche dans les papers déjà lus."""
+    """Cherche dans les papers déjà lus avec un seuil de pertinence."""
     if collection.count() == 0:
         return ""
-    
+
     embedding = embedder.encode(query).tolist()
     results = collection.query(
         query_embeddings=[embedding],
-        n_results=min(n_results, collection.count())
+        n_results=min(n_results, collection.count()),
+        include=["documents", "metadatas", "distances"]
     )
 
     if not results["documents"][0]:
         return ""
-    
-    output= "📚 **Papers déjà en mémoire :**\n\n"
-    for doc, meta in zip(results["documents"][0], results["metadatas"][0]):
+
+    # Filtre par seuil de distance — garde seulement les résultats pertinents
+    # Distance < 0.5 = très pertinent, > 0.8 = non pertinent
+    filtered = []
+    for doc, meta, dist in zip(
+        results["documents"][0],
+        results["metadatas"][0],
+        results["distances"][0]
+    ):
+        if dist < 0.7:  # seuil de pertinence
+            filtered.append((doc, meta, dist))
+
+    if not filtered:
+        return ""  # rien de pertinent → l'agent ira chercher sur arXiv
+
+    output = "📚 **Papers déjà en mémoire :**\n\n"
+    for doc, meta, dist in filtered:
         output += f"- **{meta['title']}**\n{doc[:300]}...\n\n"
-    
+
     return output
+
 
 def get_memory_count() -> int:
     """Retourne le nombre de papers en mémoire."""
-    return collection.count()   
+    return collection.count()
