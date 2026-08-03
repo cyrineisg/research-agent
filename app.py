@@ -1,6 +1,7 @@
 import gradio as gr
 from agent.graph import app_graph
 from langchain_core.messages import HumanMessage
+import os
 
 def run_agent(question, history):
     if not question.strip():
